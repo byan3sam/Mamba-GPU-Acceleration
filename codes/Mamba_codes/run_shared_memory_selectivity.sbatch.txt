@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=shared_mem_sel
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH -c 4
+#SBATCH --time=01:00:00
+#SBATCH -o shared_mem-%j.out
+#SBATCH -e shared_mem-%j.err
+
+source ~/venv/bin/activate
+
+export ITERS=20
+export WARMUP=5
+
+python3 bench_shared_memory_selectivity.py > shared_memory_results.csv
+
+echo "Saved results to shared_memory_results.csv"

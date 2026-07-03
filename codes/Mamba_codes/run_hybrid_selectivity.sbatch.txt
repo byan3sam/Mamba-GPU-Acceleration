@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=hybrid_sel
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH -c 4
+#SBATCH --time=00:30:00
+#SBATCH -o hybrid_sel-%j.out
+#SBATCH -e hybrid_sel-%j.err
+
+source ~/venv/bin/activate
+
+export ITERS=20
+export WARMUP=5
+
+python3 bench_hybrid_selectivity.py > hybrid_selectivity_results.csv
+
+echo "Saved results to hybrid_selectivity_results.csv"

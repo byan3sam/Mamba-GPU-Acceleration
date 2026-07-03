@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=hybrid_shared_final
+#SBATCH --gres=gpu:1
+#SBATCH --mem=8G
+#SBATCH -c 2
+#SBATCH --time=00:20:00
+#SBATCH -o hybrid_shared_final-%j.out
+#SBATCH -e hybrid_shared_final-%j.err
+
+source ~/venv/bin/activate
+
+export CUDA_HOME=/home/eprojuser014/cuda-toolkit-12.4
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export TORCH_CUDA_ARCH_LIST="7.5"
+
+python3 hybrid_shared_final.py

@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=parallel_sel
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH -c 4
+#SBATCH --time=00:30:00
+#SBATCH -o parallel_sel-%j.out
+#SBATCH -e parallel_sel-%j.err
+
+source ~/venv/bin/activate
+
+export ITERS=20
+export WARMUP=5
+
+python3 bench_parallel_selectivity.py > parallel_selectivity_results.csv
+
+echo "Saved results to parallel_selectivity_results.csv"

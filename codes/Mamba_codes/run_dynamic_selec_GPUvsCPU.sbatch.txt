@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=dynamic_sel_ssm
+#SBATCH --gres=gpu:1
+#SBATCH --mem=12G
+#SBATCH -c 4
+#SBATCH --time=01:00:00
+#SBATCH -o dynamic_sel-%j.out
+#SBATCH -e dynamic_sel-%j.err
+
+source ~/venv/bin/activate
+
+export ITERS=20
+export WARMUP=5
+
+python3 bench_dynamic_selective_ssm.py > dynamic_selective_results.csv
+
+echo "Saved results to dynamic_selective_results.csv"

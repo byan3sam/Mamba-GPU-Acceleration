@@ -1,0 +1,172 @@
+import torch
+import time
+from torch.utils.cpp_extension import load_inline
+
+cpp_src = r"""
+#include <torch/extension.h>
+
+torch::Tensor ssm_shared_final_fp32(torch::Tensor u,
+                                    torch::Tensor a,
+                                    torch::Tensor b,
+                                    torch::Tensor c);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("ssm_shared_final_fp32", &ssm_shared_final_fp32);
+}
+"""
+
+cuda_src = r"""
+#include <torch/extension.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+__global__ void ssm_final_kernel(
+    const float* u,
+    const float* a,
+    const float* b,
+    const float* c,
+    float* y_final,
+    int L,
+    int N
+) {
+    extern __shared__ float sh[];
+
+    float* sh_a = sh;
+    float* sh_b = sh + blockDim.x;
+    float* sh_c = sh + 2 * blockDim.x;
+
+    int tid = threadIdx.x;
+    int n = blockIdx.x * blockDim.x + tid;
+
+    if (n < N) {
+        sh_a[tid] = a[n];
+        sh_b[tid] = b[n];
+        sh_c[tid] = c[n];
+    }
+
+    __syncthreads();
+
+    if (n >= N) return;
+
+    float af = sh_a[tid];
+    float bf = sh_b[tid];
+    float cf = sh_c[tid];
+
+    float h = 0.0f;
+
+    for (int t = 0; t < L; t++) {
+        h = af * h + bf * u[t * N + n];
+    }
+
+    y_final[n] = cf * h;
+}
+
+torch::Tensor ssm_shared_final_fp32(torch::Tensor u,
+                                    torch::Tensor a,
+                                    torch::Tensor b,
+                                    torch::Tensor c) {
+    int L = u.size(0);
+    int N = u.size(1);
+
+    auto y_final = torch::empty({N}, torch::TensorOptions()
+        .device(u.device())
+        .dtype(torch::kFloat32));
+
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+    int shared_size = 3 * threads * sizeof(float);
+
+    ssm_final_kernel<<<blocks, threads, shared_size>>>(
+        u.data_ptr<float>(),
+        a.data_ptr<float>(),
+        b.data_ptr<float>(),
+        c.data_ptr<float>(),
+        y_final.data_ptr<float>(),
+        L,
+        N
+    );
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, cudaGetErrorString(err));
+
+    return y_final;
+}
+"""
+
+module = load_inline(
+    name="ssm_shared_final_fp32_v1",
+    cpp_sources=cpp_src,
+    cuda_sources=cuda_src,
+    extra_cuda_cflags=["-O3"],
+    verbose=False
+)
+
+def cpu_final(u, a, b, c):
+    L, N = u.shape
+    h = torch.zeros(N, dtype=torch.float32)
+
+    for t in range(L):
+        h = a * h + b * u[t]
+
+    return c * h
+
+def accuracy(y_ref, y_test):
+    abs_err = torch.abs(y_ref - y_test)
+    rel_err = abs_err / (torch.abs(y_ref) + 1e-8)
+
+    return {
+        "mean_abs_error": abs_err.mean().item(),
+        "max_abs_error": abs_err.max().item(),
+        "mean_rel_error": rel_err.mean().item(),
+        "mse": torch.mean((y_ref - y_test) ** 2).item()
+    }
+
+def main():
+    torch.manual_seed(0)
+    torch.set_num_threads(1)
+
+    L = 2048
+    N = 1024
+
+    u_cpu = torch.randn(L, N, dtype=torch.float32)
+    a_cpu = torch.rand(N, dtype=torch.float32) * 0.99
+    b_cpu = torch.rand(N, dtype=torch.float32)
+    c_cpu = torch.rand(N, dtype=torch.float32)
+
+    print(f"L={L}, N={N}")
+
+    t0 = time.perf_counter()
+    y_cpu = cpu_final(u_cpu, a_cpu, b_cpu, c_cpu)
+    t1 = time.perf_counter()
+    cpu_ms = (t1 - t0) * 1000
+
+    u_gpu = u_cpu.cuda()
+    a_gpu = a_cpu.cuda()
+    b_gpu = b_cpu.cuda()
+    c_gpu = c_cpu.cuda()
+
+    for _ in range(5):
+        y_gpu = module.ssm_shared_final_fp32(u_gpu, a_gpu, b_gpu, c_gpu)
+
+    torch.cuda.synchronize()
+
+    t0 = time.perf_counter()
+    y_gpu = module.ssm_shared_final_fp32(u_gpu, a_gpu, b_gpu, c_gpu)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    gpu_ms = (t1 - t0) * 1000
+
+    y_hybrid = y_gpu.cpu()
+
+    print("\n=== Accuracy: CPU FP32 final vs Hybrid GPU Shared Memory FP32 final ===")
+    print(accuracy(y_cpu, y_hybrid))
+
+    print("\n=== Latency ===")
+    print(f"CPU FP32 final latency:              {cpu_ms:.3f} ms")
+    print(f"Hybrid GPU Shared FP32 latency:      {gpu_ms:.3f} ms")
+
+    print("\n=== Speedup ===")
+    print(f"Speedup = {cpu_ms / gpu_ms:.2f}x")
+
+if __name__ == "__main__":
+    main()

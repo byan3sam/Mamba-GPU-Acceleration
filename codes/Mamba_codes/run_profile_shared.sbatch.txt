@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=profile_shared
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH -c 4
+#SBATCH --time=00:20:00
+#SBATCH -o profile_shared-%j.out
+#SBATCH -e profile_shared-%j.err
+
+source ~/venv/bin/activate
+
+export CUDA_HOME=$HOME/cuda-toolkit
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export TORCH_CUDA_ARCH_LIST="7.5"
+
+python3 profile_shared_memory.py > profile_shared_results.txt

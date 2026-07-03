@@ -1,0 +1,101 @@
+import os
+import torch
+from torch.profiler import profile, ProfilerActivity
+from torch.utils.cpp_extension import load_inline
+
+cuda_src = r"""
+#include <torch/extension.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
+__global__ void selective_shared_kernel(
+    const half* x,
+    const half* w,
+    const half* bias,
+    half* y,
+    int total,
+    int N
+) {
+    extern __shared__ half shared[];
+
+    half* sw = shared;
+    half* sb = shared + blockDim.x;
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    if (idx < total) {
+        int n = idx % N;
+
+        sw[tid] = w[n];
+        sb[tid] = bias[n];
+
+        __syncthreads();
+
+        float xv = __half2float(x[idx]);
+        float wv = __half2float(sw[tid]);
+        float bv = __half2float(sb[tid]);
+
+        float gate = 1.0f / (1.0f + expf(-(xv * wv + bv)));
+        y[idx] = __float2half(xv * gate);
+    }
+}
+
+torch::Tensor selective_shared(torch::Tensor x, torch::Tensor w, torch::Tensor bias) {
+    auto y = torch::empty_like(x);
+
+    int total = x.numel();
+    int N = w.numel();
+
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+    size_t shared_mem = 2 * threads * sizeof(half);
+
+    selective_shared_kernel<<<blocks, threads, shared_mem>>>(
+        reinterpret_cast<const half*>(x.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(w.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(bias.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(y.data_ptr<at::Half>()),
+        total,
+        N
+    );
+
+    return y;
+}
+"""
+
+module = load_inline(
+    name="selective_shared_profile_ext",
+    cpp_sources="torch::Tensor selective_shared(torch::Tensor x, torch::Tensor w, torch::Tensor bias);",
+    cuda_sources=cuda_src,
+    functions=["selective_shared"],
+    with_cuda=True,
+    verbose=False,
+)
+
+B, L, N = 16, 16384, 1024
+device = "cuda"
+
+x = torch.randn(B, L, N, device=device, dtype=torch.float16)
+w = torch.randn(N, device=device, dtype=torch.float16)
+bias = torch.randn(N, device=device, dtype=torch.float16)
+
+# Warmup
+for _ in range(5):
+    y = module.selective_shared(x, w, bias)
+
+torch.cuda.synchronize()
+
+with profile(
+    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    record_shapes=True,
+    profile_memory=True
+) as prof:
+    y = module.selective_shared(x, w, bias)
+    torch.cuda.synchronize()
+
+print(prof.key_averages().table(
+    sort_by="cuda_time_total",
+    row_limit=20
+))

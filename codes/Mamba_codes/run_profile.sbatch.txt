@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --job-name=profile_sel
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH -c 4
+#SBATCH --time=00:10:00
+#SBATCH -o profile-%j.out
+#SBATCH -e profile-%j.err
+
+source ~/venv/bin/activate
+
+python3 profile_selectivity.py > profile_results.txt

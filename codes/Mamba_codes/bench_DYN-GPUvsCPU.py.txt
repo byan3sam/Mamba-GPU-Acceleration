@@ -1,0 +1,67 @@
+import os
+import time
+import torch
+
+
+def run_one(device, dtype, L, N, iters=20, warmup=5):
+    if device == "cuda" and not torch.cuda.is_available():
+        return None
+
+    dev = torch.device(device)
+
+    a = torch.randn(N, device=dev, dtype=dtype) * 0.99
+    b = torch.randn(N, device=dev, dtype=dtype)
+    g = torch.randn(N, device=dev, dtype=dtype)   # learned gate weights
+    bias = torch.randn(N, device=dev, dtype=dtype)
+
+    u = torch.randn(L, N, device=dev, dtype=dtype)
+
+    # warmup
+    for _ in range(warmup):
+        h = torch.zeros(N, device=dev, dtype=dtype)
+        for t in range(L):
+            gate = torch.sigmoid(g * u[t] + bias)   # dynamic selectivity
+            h = (a * h + b * u[t]) * gate
+
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    t0 = time.perf_counter()
+
+    for _ in range(iters):
+        h = torch.zeros(N, device=dev, dtype=dtype)
+        for t in range(L):
+            gate = torch.sigmoid(g * u[t] + bias)
+            h = (a * h + b * u[t]) * gate
+
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    t1 = time.perf_counter()
+
+    return (t1 - t0) * 1000 / iters
+
+
+def main():
+    L_list = [2048, 4096, 8192, 16384, 32768]
+    N_list = [1024, 2048]
+
+    iters = int(os.environ.get("ITERS", "20"))
+    warmup = int(os.environ.get("WARMUP", "5"))
+
+    print("variant,device,dtype,L,N,avg_latency_ms")
+
+    for L in L_list:
+        for N in N_list:
+            ms = run_one("cpu", torch.float32, L, N, iters, warmup)
+            print(f"dynamic_selective_ssm,cpu,float32,{L},{N},{ms:.6f}")
+
+    if torch.cuda.is_available():
+        for L in L_list:
+            for N in N_list:
+                ms = run_one("cuda", torch.float16, L, N, iters, warmup)
+                print(f"dynamic_selective_ssm,cuda,float16,{L},{N},{ms:.6f}")
+
+
+if __name__ == "__main__":
+    main()
